@@ -16,16 +16,30 @@ STALE_ACCESS_KEY_DAYS = 90
 
 
 # ============================================================
-# HELPER FUNCTIONS
+# HELPER
 # ============================================================
 
-def create_finding(severity, service, resource, issue, remediation):
+def create_finding(
+    finding_id,
+    severity,
+    service,
+    category,
+    resource,
+    issue,
+    risk,
+    remediation,
+    status="OPEN"
+):
     return {
+        "id": finding_id,
         "severity": severity,
         "service": service,
+        "category": category,
         "resource": resource,
         "issue": issue,
-        "remediation": remediation
+        "risk": risk,
+        "remediation": remediation,
+        "status": status
     }
 
 
@@ -40,7 +54,6 @@ def check_security_groups():
 
     try:
         ec2 = boto3.client("ec2")
-
         paginator = ec2.get_paginator("describe_security_groups")
 
         for page in paginator.paginate():
@@ -69,11 +82,14 @@ def check_security_groups():
                             if from_port <= port <= to_port:
                                 findings.append(
                                     create_finding(
+                                        "AWS-EC2-SG-001",
                                         "CRITICAL",
                                         "EC2",
+                                        "Network Exposure",
                                         f"{sg_id} ({sg_name})",
-                                        f"{service} port {port} is exposed to 0.0.0.0/0",
-                                        "Restrict inbound access to trusted IP ranges or private connectivity."
+                                        f"{service} port {port} is exposed to 0.0.0.0/0.",
+                                        "Public exposure of management ports increases the risk of brute-force attempts and unauthorized access.",
+                                        "Restrict inbound access to trusted IP ranges, VPN connectivity, bastion hosts, or private access."
                                     )
                                 )
 
@@ -89,10 +105,13 @@ def check_security_groups():
                             if from_port <= port <= to_port:
                                 findings.append(
                                     create_finding(
+                                        "AWS-EC2-SG-002",
                                         "CRITICAL",
                                         "EC2",
+                                        "Network Exposure",
                                         f"{sg_id} ({sg_name})",
-                                        f"{service} port {port} is exposed to ::/0",
+                                        f"{service} port {port} is exposed to ::/0.",
+                                        "Public IPv6 exposure of management ports increases the attack surface.",
                                         "Restrict IPv6 inbound access to trusted networks."
                                     )
                                 )
@@ -100,11 +119,15 @@ def check_security_groups():
     except Exception as error:
         findings.append(
             create_finding(
+                "AWS-EC2-ERROR",
                 "ERROR",
                 "EC2",
+                "Assessment Error",
                 "Security Groups",
                 str(error),
-                "Verify AWS credentials and EC2 read permissions."
+                "The scanner could not complete the Security Group assessment.",
+                "Verify AWS credentials and EC2 read permissions.",
+                "ERROR"
             )
         )
 
@@ -122,7 +145,6 @@ def check_public_rds():
 
     try:
         rds = boto3.client("rds")
-
         paginator = rds.get_paginator("describe_db_instances")
 
         for page in paginator.paginate():
@@ -132,10 +154,13 @@ def check_public_rds():
 
                     findings.append(
                         create_finding(
+                            "AWS-RDS-001",
                             "HIGH",
                             "RDS",
+                            "Public Exposure",
                             db["DBInstanceIdentifier"],
                             "Database is configured as publicly accessible.",
+                            "A publicly accessible database may increase the risk of unauthorized access if network or authentication controls are weak.",
                             "Place the database in private subnets and disable public accessibility unless explicitly required."
                         )
                     )
@@ -143,11 +168,15 @@ def check_public_rds():
     except Exception as error:
         findings.append(
             create_finding(
+                "AWS-RDS-ERROR",
                 "ERROR",
                 "RDS",
+                "Assessment Error",
                 "RDS Assessment",
                 str(error),
-                "Verify RDS read permissions."
+                "The scanner could not complete the RDS assessment.",
+                "Verify RDS read permissions.",
+                "ERROR"
             )
         )
 
@@ -155,7 +184,7 @@ def check_public_rds():
 
 
 # ============================================================
-# CHECK 3 - S3 PUBLIC ACCESS BLOCK
+# CHECK 3 - S3 PUBLIC ACCESS
 # ============================================================
 
 def check_s3_public_access():
@@ -165,7 +194,6 @@ def check_s3_public_access():
 
     try:
         s3 = boto3.client("s3")
-
         response = s3.list_buckets()
 
         for bucket in response.get("Buckets", []):
@@ -197,11 +225,15 @@ def check_s3_public_access():
 
                     findings.append(
                         create_finding(
+                            "AWS-S3-PAB-001",
                             "REVIEW",
                             "S3",
+                            "Public Access Configuration",
                             bucket_name,
                             ", ".join(risky_settings),
-                            "Confirm whether public access is intentionally required. Prefer private S3 access through CloudFront OAC where possible."
+                            "These settings may permit public access depending on the bucket policy and intended architecture.",
+                            "Confirm whether public access is intentionally required. Prefer private S3 access through CloudFront OAC where possible.",
+                            "REVIEW_REQUIRED"
                         )
                     )
 
@@ -209,11 +241,15 @@ def check_s3_public_access():
 
                 findings.append(
                     create_finding(
+                        "AWS-S3-PAB-002",
                         "REVIEW",
                         "S3",
+                        "Public Access Configuration",
                         bucket_name,
                         "No Public Access Block configuration found.",
-                        "Review the bucket policy and enable S3 Public Access Block unless public access is intentionally required."
+                        "The bucket may allow unintended public access depending on ACL and bucket policy configuration.",
+                        "Review the bucket policy and enable Public Access Block unless public access is intentionally required.",
+                        "REVIEW_REQUIRED"
                     )
                 )
 
@@ -221,11 +257,15 @@ def check_s3_public_access():
 
                 findings.append(
                     create_finding(
+                        "AWS-S3-ERROR",
                         "ERROR",
                         "S3",
+                        "Assessment Error",
                         bucket_name,
                         str(error),
-                        "Verify permission to inspect this bucket."
+                        "The scanner could not inspect this bucket.",
+                        "Verify permission to inspect this S3 bucket.",
+                        "ERROR"
                     )
                 )
 
@@ -233,11 +273,15 @@ def check_s3_public_access():
 
         findings.append(
             create_finding(
+                "AWS-S3-ERROR",
                 "ERROR",
                 "S3",
+                "Assessment Error",
                 "S3 Assessment",
                 str(error),
-                "Verify S3 read permissions."
+                "The scanner could not complete the S3 assessment.",
+                "Verify S3 read permissions.",
+                "ERROR"
             )
         )
 
@@ -245,7 +289,7 @@ def check_s3_public_access():
 
 
 # ============================================================
-# CHECK 4 - IAM USERS WITHOUT MFA
+# CHECK 4 - IAM MFA
 # ============================================================
 
 def check_iam_mfa():
@@ -255,7 +299,6 @@ def check_iam_mfa():
 
     try:
         iam = boto3.client("iam")
-
         paginator = iam.get_paginator("list_users")
 
         for page in paginator.paginate():
@@ -272,11 +315,14 @@ def check_iam_mfa():
 
                     findings.append(
                         create_finding(
+                            "AWS-IAM-MFA-001",
                             "HIGH",
                             "IAM",
+                            "Identity Security",
                             username,
                             "IAM user does not have MFA configured.",
-                            "Enable MFA or migrate human access to centralized identity/SSO."
+                            "A compromised password may allow account access without a second authentication factor.",
+                            "Enable MFA or migrate human access to centralized identity federation or AWS IAM Identity Center."
                         )
                     )
 
@@ -284,11 +330,15 @@ def check_iam_mfa():
 
         findings.append(
             create_finding(
+                "AWS-IAM-MFA-ERROR",
                 "ERROR",
                 "IAM",
+                "Assessment Error",
                 "MFA Assessment",
                 str(error),
-                "Verify IAM read permissions."
+                "The scanner could not complete the IAM MFA assessment.",
+                "Verify IAM read permissions.",
+                "ERROR"
             )
         )
 
@@ -296,7 +346,7 @@ def check_iam_mfa():
 
 
 # ============================================================
-# CHECK 5 - STALE IAM ACCESS KEYS
+# CHECK 5 - STALE ACCESS KEYS
 # ============================================================
 
 def check_stale_access_keys():
@@ -306,7 +356,6 @@ def check_stale_access_keys():
 
     try:
         iam = boto3.client("iam")
-
         paginator = iam.get_paginator("list_users")
 
         now = datetime.now(timezone.utc)
@@ -324,7 +373,6 @@ def check_stale_access_keys():
                 for key in keys.get("AccessKeyMetadata", []):
 
                     create_date = key["CreateDate"]
-
                     age = (now - create_date).days
 
                     if (
@@ -334,11 +382,14 @@ def check_stale_access_keys():
 
                         findings.append(
                             create_finding(
+                                "AWS-IAM-KEY-001",
                                 "MEDIUM",
                                 "IAM",
+                                "Credential Hygiene",
                                 username,
                                 f"Active access key is {age} days old.",
-                                "Review whether the key is still required. Prefer temporary credentials and rotate or remove unnecessary long-lived keys."
+                                "Long-lived credentials increase exposure if they are leaked, copied, or forgotten.",
+                                "Review whether the key is still required. Rotate or remove unnecessary keys and prefer temporary credentials."
                             )
                         )
 
@@ -346,11 +397,15 @@ def check_stale_access_keys():
 
         findings.append(
             create_finding(
+                "AWS-IAM-KEY-ERROR",
                 "ERROR",
                 "IAM",
+                "Assessment Error",
                 "Access Key Assessment",
                 str(error),
-                "Verify IAM read permissions."
+                "The scanner could not complete the IAM access key assessment.",
+                "Verify IAM read permissions.",
+                "ERROR"
             )
         )
 
@@ -358,7 +413,7 @@ def check_stale_access_keys():
 
 
 # ============================================================
-# CHECK 6 - UNENCRYPTED EBS VOLUMES
+# CHECK 6 - EBS ENCRYPTION
 # ============================================================
 
 def check_ebs_encryption():
@@ -368,7 +423,6 @@ def check_ebs_encryption():
 
     try:
         ec2 = boto3.client("ec2")
-
         paginator = ec2.get_paginator("describe_volumes")
 
         for page in paginator.paginate():
@@ -381,10 +435,13 @@ def check_ebs_encryption():
 
                     findings.append(
                         create_finding(
+                            "AWS-EBS-001",
                             "HIGH",
                             "EBS",
+                            "Data Protection",
                             volume_id,
                             "EBS volume is not encrypted.",
+                            "Unencrypted storage may expose data if snapshots or underlying storage are improperly accessed.",
                             "Migrate data to an encrypted EBS volume using AWS KMS."
                         )
                     )
@@ -393,11 +450,15 @@ def check_ebs_encryption():
 
         findings.append(
             create_finding(
+                "AWS-EBS-ERROR",
                 "ERROR",
                 "EBS",
+                "Assessment Error",
                 "EBS Assessment",
                 str(error),
-                "Verify EC2 volume read permissions."
+                "The scanner could not complete the EBS encryption assessment.",
+                "Verify EC2 volume read permissions.",
+                "ERROR"
             )
         )
 
@@ -405,7 +466,7 @@ def check_ebs_encryption():
 
 
 # ============================================================
-# CHECK 7 - CLOUDTRAIL LOGGING
+# CHECK 7 - CLOUDTRAIL
 # ============================================================
 
 def check_cloudtrail():
@@ -426,10 +487,13 @@ def check_cloudtrail():
 
             findings.append(
                 create_finding(
+                    "AWS-CT-001",
                     "HIGH",
                     "CloudTrail",
+                    "Logging and Monitoring",
                     "AWS Account",
                     "No CloudTrail trail was detected.",
+                    "Without CloudTrail, security teams may lack sufficient audit data for investigations and incident response.",
                     "Configure CloudTrail to record AWS API activity."
                 )
             )
@@ -449,10 +513,13 @@ def check_cloudtrail():
 
                     findings.append(
                         create_finding(
+                            "AWS-CT-002",
                             "HIGH",
                             "CloudTrail",
+                            "Logging and Monitoring",
                             trail_name,
                             "CloudTrail exists but logging is disabled.",
+                            "Disabled audit logging reduces visibility into AWS API activity and security events.",
                             "Enable CloudTrail logging."
                         )
                     )
@@ -461,11 +528,15 @@ def check_cloudtrail():
 
                 findings.append(
                     create_finding(
+                        "AWS-CT-ERROR",
                         "ERROR",
                         "CloudTrail",
+                        "Assessment Error",
                         trail_name,
                         str(error),
-                        "Verify CloudTrail read permissions."
+                        "The scanner could not inspect this CloudTrail.",
+                        "Verify CloudTrail read permissions.",
+                        "ERROR"
                     )
                 )
 
@@ -473,11 +544,15 @@ def check_cloudtrail():
 
         findings.append(
             create_finding(
+                "AWS-CT-ERROR",
                 "ERROR",
                 "CloudTrail",
+                "Assessment Error",
                 "CloudTrail Assessment",
                 str(error),
-                "Verify CloudTrail read permissions."
+                "The scanner could not complete the CloudTrail assessment.",
+                "Verify CloudTrail read permissions.",
+                "ERROR"
             )
         )
 
@@ -485,7 +560,7 @@ def check_cloudtrail():
 
 
 # ============================================================
-# REPORTING
+# TERMINAL REPORT
 # ============================================================
 
 def print_section(title, findings, pass_message):
@@ -500,13 +575,23 @@ def print_section(title, findings, pass_message):
     for finding in findings:
 
         print(
-            f"\n[{finding['severity']}] "
-            f"{finding['service']} | "
-            f"{finding['resource']}"
+            f"\n[{finding['severity']}] {finding['id']}"
         )
 
-        print(f"Issue: {finding['issue']}")
-        print(f"Remediation: {finding['remediation']}")
+        print(f"Service: {finding['service']}")
+        print(f"Category: {finding['category']}")
+        print(f"Resource: {finding['resource']}")
+
+        print(f"\nIssue:")
+        print(finding["issue"])
+
+        print(f"\nRisk:")
+        print(finding["risk"])
+
+        print(f"\nRemediation:")
+        print(finding["remediation"])
+
+        print(f"\nStatus: {finding['status']}")
 
 
 def print_report(results):
@@ -563,22 +648,39 @@ def print_report(results):
         all_findings.extend(result)
 
     security_findings = [
-        finding
-        for finding in all_findings
-        if finding["severity"] != "ERROR"
+        item for item in all_findings
+        if item["severity"] != "ERROR"
     ]
 
     errors = [
-        finding
-        for finding in all_findings
-        if finding["severity"] == "ERROR"
+        item for item in all_findings
+        if item["severity"] == "ERROR"
     ]
+
+    severity_counts = {
+        "CRITICAL": 0,
+        "HIGH": 0,
+        "MEDIUM": 0,
+        "REVIEW": 0
+    }
+
+    for finding in security_findings:
+
+        severity = finding["severity"]
+
+        if severity in severity_counts:
+            severity_counts[severity] += 1
 
     print("\n" + "=" * 70)
     print("SCAN SUMMARY")
     print("=" * 70)
 
-    print(f"Security findings: {len(security_findings)}")
+    print(f"Critical: {severity_counts['CRITICAL']}")
+    print(f"High:     {severity_counts['HIGH']}")
+    print(f"Medium:   {severity_counts['MEDIUM']}")
+    print(f"Review:   {severity_counts['REVIEW']}")
+
+    print(f"\nTotal security findings: {len(security_findings)}")
     print(f"Assessment errors: {len(errors)}")
 
     print("=" * 70)
@@ -599,31 +701,62 @@ def export_json_report(results):
         all_findings.extend(result)
 
     security_findings = [
-        finding
-        for finding in all_findings
-        if finding["severity"] != "ERROR"
+        item for item in all_findings
+        if item["severity"] != "ERROR"
     ]
 
     errors = [
-        finding
-        for finding in all_findings
-        if finding["severity"] == "ERROR"
+        item for item in all_findings
+        if item["severity"] == "ERROR"
     ]
 
-    report = {
-        "scanner": "Multi-Cloud Security Posture Scanner",
-        "cloud": "AWS",
-        "scan_timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        "account_id": identity.get("Account"),
-        "principal_arn": identity.get("Arn"),
-        "summary": {
-            "security_findings": len(security_findings),
-            "assessment_errors": len(errors)
-        },
-        "results": results
+    severity_counts = {
+        "CRITICAL": 0,
+        "HIGH": 0,
+        "MEDIUM": 0,
+        "REVIEW": 0
     }
 
-    with open("report.json", "w", encoding="utf-8") as file:
+    for finding in security_findings:
+
+        severity = finding["severity"]
+
+        if severity in severity_counts:
+            severity_counts[severity] += 1
+
+    report = {
+        "scanner": {
+            "name": "Multi-Cloud Security Posture Scanner",
+            "version": "1.1.0",
+            "cloud": "AWS",
+            "scan_timestamp_utc": datetime.now(
+                timezone.utc
+            ).isoformat()
+        },
+        "assessment": {
+            "account_id": identity.get("Account"),
+            "principal_arn": identity.get("Arn")
+        },
+        "summary": {
+            "total_security_findings": len(
+                security_findings
+            ),
+            "critical": severity_counts["CRITICAL"],
+            "high": severity_counts["HIGH"],
+            "medium": severity_counts["MEDIUM"],
+            "review": severity_counts["REVIEW"],
+            "assessment_errors": len(errors)
+        },
+        "findings": security_findings,
+        "errors": errors
+    }
+
+    with open(
+        "report.json",
+        "w",
+        encoding="utf-8"
+    ) as file:
+
         json.dump(
             report,
             file,
@@ -653,5 +786,4 @@ if __name__ == "__main__":
     }
 
     print_report(results)
-
     export_json_report(results)
