@@ -1,0 +1,95 @@
+{
+  "scanner": {
+    "name": "Multi-Cloud Security Posture Scanner",
+    "version": "1.0.0",
+    "cloud": "AWS",
+    "scan_timestamp_utc": "2026-09-28T18:10:00+00:00"
+  },
+  "assessment": {
+    "account_id": "123456789012",
+    "principal_arn": "arn:aws:iam::123456789012:user/security-assessment-user",
+    "region": "ap-south-1"
+  },
+  "summary": {
+    "total_security_findings": 5,
+    "critical": 1,
+    "high": 2,
+    "medium": 1,
+    "review": 1,
+    "assessment_errors": 0
+  },
+  "findings": [
+    {
+      "id": "AWS-EC2-SG-001",
+      "severity": "CRITICAL",
+      "service": "EC2",
+      "category": "Network Exposure",
+      "resource": "sg-0123456789abcdef0",
+      "resource_name": "example-admin-sg",
+      "issue": "SSH port 22 is exposed to 0.0.0.0/0.",
+      "risk": "An internet-exposed management port increases the attack surface and may allow unauthorized access attempts.",
+      "remediation": "Restrict inbound SSH access to trusted IP ranges, VPN connectivity, bastion hosts, or AWS Systems Manager Session Manager.",
+      "status": "OPEN"
+    },
+    {
+      "id": "AWS-RDS-001",
+      "severity": "HIGH",
+      "service": "RDS",
+      "category": "Public Exposure",
+      "resource": "example-production-db",
+      "issue": "Database is configured as publicly accessible.",
+      "risk": "Public database exposure may increase the likelihood of unauthorized access if network or authentication controls are weak.",
+      "remediation": "Place the database in private subnets and disable public accessibility unless there is a documented business requirement.",
+      "status": "OPEN"
+    },
+    {
+      "id": "AWS-IAM-MFA-001",
+      "severity": "HIGH",
+      "service": "IAM",
+      "category": "Identity Security",
+      "resource": "example-cloud-admin",
+      "issue": "IAM user does not have MFA configured.",
+      "risk": "A compromised password may provide direct access to the AWS account without an additional authentication factor.",
+      "remediation": "Enable MFA or migrate human access to centralized identity federation or AWS IAM Identity Center.",
+      "status": "OPEN"
+    },
+    {
+      "id": "AWS-IAM-KEY-001",
+      "severity": "MEDIUM",
+      "service": "IAM",
+      "category": "Credential Hygiene",
+      "resource": "example-automation-user",
+      "issue": "Active access key is 143 days old.",
+      "risk": "Long-lived credentials increase exposure if they are leaked, copied, or forgotten.",
+      "remediation": "Review whether the access key is still required. Rotate or remove unnecessary keys and prefer temporary credentials where possible.",
+      "status": "OPEN"
+    },
+    {
+      "id": "AWS-S3-PAB-001",
+      "severity": "REVIEW",
+      "service": "S3",
+      "category": "Public Access Configuration",
+      "resource": "example-static-site-bucket",
+      "issue": "BlockPublicPolicy=False.",
+      "risk": "The configuration may allow public access depending on the bucket policy and architecture.",
+      "remediation": "Confirm whether public access is intentionally required. Prefer private bucket access through CloudFront Origin Access Control where appropriate.",
+      "status": "REVIEW_REQUIRED"
+    }
+  ],
+  "attack_path_example": {
+    "title": "Illustrative Cloud Attack Path",
+    "severity": "CRITICAL",
+    "path": [
+      "Internet Exposure",
+      "Public Compute Resource",
+      "Overprivileged IAM Role",
+      "Sensitive S3 Data"
+    ],
+    "description": "This example demonstrates how multiple individual findings may combine into a higher-risk attack path."
+  },
+  "notes": [
+    "All resource names and account identifiers in this file are fictional.",
+    "This sample report is provided for demonstration and portfolio purposes.",
+    "The scanner should only be used against cloud environments where assessment is explicitly authorized."
+  ]
+}
