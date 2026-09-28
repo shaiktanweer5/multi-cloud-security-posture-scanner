@@ -1,198 +1,704 @@
 import boto3
+from datetime import datetime, timezone
+
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
 
 SENSITIVE_PORTS = {
     22: "SSH",
     3389: "RDP"
 }
 
+STALE_ACCESS_KEY_DAYS = 90
+
+
+# ============================================================
+# HELPER FUNCTIONS
+# ============================================================
+
+def create_finding(severity, service, resource, issue, remediation):
+    return {
+        "severity": severity,
+        "service": service,
+        "resource": resource,
+        "issue": issue,
+        "remediation": remediation
+    }
+
+
+# ============================================================
+# CHECK 1 - SECURITY GROUP EXPOSURE
+# ============================================================
 
 def check_security_groups():
-    print("\nChecking Security Groups...\n")
-
-    ec2 = boto3.client("ec2")
-    response = ec2.describe_security_groups()
+    print("Checking Security Groups...")
 
     findings = []
 
-    for sg in response.get("SecurityGroups", []):
-        sg_id = sg["GroupId"]
-        sg_name = sg.get("GroupName", "N/A")
+    try:
+        ec2 = boto3.client("ec2")
 
-        for permission in sg.get("IpPermissions", []):
-            from_port = permission.get("FromPort")
-            to_port = permission.get("ToPort")
+        paginator = ec2.get_paginator("describe_security_groups")
 
-            if from_port is None or to_port is None:
-                continue
+        for page in paginator.paginate():
+            for sg in page.get("SecurityGroups", []):
 
-            for ip_range in permission.get("IpRanges", []):
-                cidr = ip_range.get("CidrIp")
+                sg_id = sg["GroupId"]
+                sg_name = sg.get("GroupName", "N/A")
 
-                if cidr != "0.0.0.0/0":
-                    continue
+                for permission in sg.get("IpPermissions", []):
 
-                for port, service in SENSITIVE_PORTS.items():
-                    if from_port <= port <= to_port:
-                        findings.append({
-                            "severity": "CRITICAL",
-                            "security_group": sg_id,
-                            "name": sg_name,
-                            "port": port,
-                            "service": service,
-                            "cidr": cidr
-                        })
+                    from_port = permission.get("FromPort")
+                    to_port = permission.get("ToPort")
+
+                    if from_port is None or to_port is None:
+                        continue
+
+                    # IPv4 checks
+                    for ip_range in permission.get("IpRanges", []):
+
+                        cidr = ip_range.get("CidrIp")
+
+                        if cidr != "0.0.0.0/0":
+                            continue
+
+                        for port, service in SENSITIVE_PORTS.items():
+
+                            if from_port <= port <= to_port:
+                                findings.append(
+                                    create_finding(
+                                        "CRITICAL",
+                                        "EC2",
+                                        f"{sg_id} ({sg_name})",
+                                        f"{service} port {port} is exposed to 0.0.0.0/0",
+                                        "Restrict inbound access to trusted IP ranges or private connectivity."
+                                    )
+                                )
+
+                    # IPv6 checks
+                    for ipv6_range in permission.get("Ipv6Ranges", []):
+
+                        cidr = ipv6_range.get("CidrIpv6")
+
+                        if cidr != "::/0":
+                            continue
+
+                        for port, service in SENSITIVE_PORTS.items():
+
+                            if from_port <= port <= to_port:
+                                findings.append(
+                                    create_finding(
+                                        "CRITICAL",
+                                        "EC2",
+                                        f"{sg_id} ({sg_name})",
+                                        f"{service} port {port} is exposed to ::/0",
+                                        "Restrict IPv6 inbound access to trusted networks."
+                                    )
+                                )
+
+    except Exception as error:
+        findings.append(
+            create_finding(
+                "ERROR",
+                "EC2",
+                "Security Groups",
+                str(error),
+                "Verify AWS credentials and EC2 read permissions."
+            )
+        )
 
     return findings
 
+
+# ============================================================
+# CHECK 2 - PUBLIC RDS
+# ============================================================
 
 def check_public_rds():
-    print("\nChecking RDS instances...\n")
-
-    rds = boto3.client("rds")
-    response = rds.describe_db_instances()
+    print("Checking RDS instances...")
 
     findings = []
 
-    for db in response.get("DBInstances", []):
-        if db.get("PubliclyAccessible", False):
-            findings.append({
-                "severity": "HIGH",
-                "db_instance": db["DBInstanceIdentifier"],
-                "engine": db.get("Engine", "N/A"),
-                "endpoint": db.get("Endpoint", {}).get("Address", "N/A")
-            })
+    try:
+        rds = boto3.client("rds")
+
+        paginator = rds.get_paginator("describe_db_instances")
+
+        for page in paginator.paginate():
+            for db in page.get("DBInstances", []):
+
+                if db.get("PubliclyAccessible", False):
+
+                    findings.append(
+                        create_finding(
+                            "HIGH",
+                            "RDS",
+                            db["DBInstanceIdentifier"],
+                            "Database is configured as publicly accessible.",
+                            "Place the database in private subnets and disable public accessibility unless explicitly required."
+                        )
+                    )
+
+    except Exception as error:
+        findings.append(
+            create_finding(
+                "ERROR",
+                "RDS",
+                "RDS Assessment",
+                str(error),
+                "Verify RDS read permissions."
+            )
+        )
 
     return findings
 
+
+# ============================================================
+# CHECK 3 - S3 PUBLIC ACCESS BLOCK
+# ============================================================
 
 def check_s3_public_access():
-    print("\nChecking S3 buckets...\n")
-
-    s3 = boto3.client("s3")
-    response = s3.list_buckets()
+    print("Checking S3 buckets...")
 
     findings = []
 
-    for bucket in response.get("Buckets", []):
-        bucket_name = bucket["Name"]
+    try:
+        s3 = boto3.client("s3")
 
-        try:
-            response = s3.get_public_access_block(Bucket=bucket_name)
-            config = response["PublicAccessBlockConfiguration"]
+        response = s3.list_buckets()
 
-            risky_settings = []
+        for bucket in response.get("Buckets", []):
 
-            if not config.get("BlockPublicAcls", False):
-                risky_settings.append("BlockPublicAcls=False")
+            bucket_name = bucket["Name"]
 
-            if not config.get("IgnorePublicAcls", False):
-                risky_settings.append("IgnorePublicAcls=False")
+            try:
+                response = s3.get_public_access_block(
+                    Bucket=bucket_name
+                )
 
-            if not config.get("BlockPublicPolicy", False):
-                risky_settings.append("BlockPublicPolicy=False")
+                config = response[
+                    "PublicAccessBlockConfiguration"
+                ]
 
-            if not config.get("RestrictPublicBuckets", False):
-                risky_settings.append("RestrictPublicBuckets=False")
+                risky_settings = []
 
-            if risky_settings:
-                findings.append({
-                    "severity": "HIGH",
-                    "bucket": bucket_name,
-                    "issue": ", ".join(risky_settings)
-                })
+                if not config.get("BlockPublicAcls", False):
+                    risky_settings.append(
+                        "BlockPublicAcls=False"
+                    )
 
-        except s3.exceptions.NoSuchPublicAccessBlockConfiguration:
-            findings.append({
-                "severity": "HIGH",
-                "bucket": bucket_name,
-                "issue": "No Public Access Block configuration found"
-            })
+                if not config.get("IgnorePublicAcls", False):
+                    risky_settings.append(
+                        "IgnorePublicAcls=False"
+                    )
 
-        except Exception as error:
-            findings.append({
-                "severity": "INFO",
-                "bucket": bucket_name,
-                "issue": f"Could not evaluate bucket: {error}"
-            })
+                if not config.get("BlockPublicPolicy", False):
+                    risky_settings.append(
+                        "BlockPublicPolicy=False"
+                    )
+
+                if not config.get(
+                    "RestrictPublicBuckets",
+                    False
+                ):
+                    risky_settings.append(
+                        "RestrictPublicBuckets=False"
+                    )
+
+                if risky_settings:
+
+                    findings.append(
+                        create_finding(
+                            "REVIEW",
+                            "S3",
+                            bucket_name,
+                            ", ".join(risky_settings),
+                            "Confirm whether public access is intentionally required. Prefer private S3 access through CloudFront OAC where possible."
+                        )
+                    )
+
+            except s3.exceptions.NoSuchPublicAccessBlockConfiguration:
+
+                findings.append(
+                    create_finding(
+                        "REVIEW",
+                        "S3",
+                        bucket_name,
+                        "No Public Access Block configuration found.",
+                        "Review the bucket policy and enable S3 Public Access Block unless public access is intentionally required."
+                    )
+                )
+
+            except Exception as error:
+
+                findings.append(
+                    create_finding(
+                        "ERROR",
+                        "S3",
+                        bucket_name,
+                        str(error),
+                        "Verify permission to inspect this bucket."
+                    )
+                )
+
+    except Exception as error:
+
+        findings.append(
+            create_finding(
+                "ERROR",
+                "S3",
+                "S3 Assessment",
+                str(error),
+                "Verify S3 read permissions."
+            )
+        )
 
     return findings
 
 
-def print_report(
-    security_group_findings,
-    rds_findings,
-    s3_findings
+# ============================================================
+# CHECK 4 - IAM USERS WITHOUT MFA
+# ============================================================
+
+def check_iam_mfa():
+    print("Checking IAM MFA...")
+
+    findings = []
+
+    try:
+        iam = boto3.client("iam")
+
+        paginator = iam.get_paginator("list_users")
+
+        for page in paginator.paginate():
+
+            for user in page.get("Users", []):
+
+                username = user["UserName"]
+
+                mfa_devices = iam.list_mfa_devices(
+                    UserName=username
+                )
+
+                if not mfa_devices.get("MFADevices"):
+
+                    findings.append(
+                        create_finding(
+                            "HIGH",
+                            "IAM",
+                            username,
+                            "IAM user does not have MFA configured.",
+                            "Enable MFA or migrate human access to centralized identity/SSO."
+                        )
+                    )
+
+    except Exception as error:
+
+        findings.append(
+            create_finding(
+                "ERROR",
+                "IAM",
+                "MFA Assessment",
+                str(error),
+                "Verify IAM read permissions."
+            )
+        )
+
+    return findings
+
+
+# ============================================================
+# CHECK 5 - STALE IAM ACCESS KEYS
+# ============================================================
+
+def check_stale_access_keys():
+    print("Checking IAM access keys...")
+
+    findings = []
+
+    try:
+        iam = boto3.client("iam")
+
+        paginator = iam.get_paginator("list_users")
+
+        now = datetime.now(timezone.utc)
+
+        for page in paginator.paginate():
+
+            for user in page.get("Users", []):
+
+                username = user["UserName"]
+
+                keys = iam.list_access_keys(
+                    UserName=username
+                )
+
+                for key in keys.get(
+                    "AccessKeyMetadata",
+                    []
+                ):
+
+                    create_date = key["CreateDate"]
+
+                    age = (
+                        now - create_date
+                    ).days
+
+                    if (
+                        key.get("Status") == "Active"
+                        and age > STALE_ACCESS_KEY_DAYS
+                    ):
+
+                        findings.append(
+                            create_finding(
+                                "MEDIUM",
+                                "IAM",
+                                username,
+                                f"Active access key is {age} days old.",
+                                "Review whether the key is still required. Prefer temporary credentials and rotate or remove unnecessary long-lived keys."
+                            )
+                        )
+
+    except Exception as error:
+
+        findings.append(
+            create_finding(
+                "ERROR",
+                "IAM",
+                "Access Key Assessment",
+                str(error),
+                "Verify IAM read permissions."
+            )
+        )
+
+    return findings
+
+
+# ============================================================
+# CHECK 6 - UNENCRYPTED EBS VOLUMES
+# ============================================================
+
+def check_ebs_encryption():
+    print("Checking EBS encryption...")
+
+    findings = []
+
+    try:
+        ec2 = boto3.client("ec2")
+
+        paginator = ec2.get_paginator(
+            "describe_volumes"
+        )
+
+        for page in paginator.paginate():
+
+            for volume in page.get("Volumes", []):
+
+                volume_id = volume["VolumeId"]
+
+                if not volume.get(
+                    "Encrypted",
+                    False
+                ):
+
+                    findings.append(
+                        create_finding(
+                            "HIGH",
+                            "EBS",
+                            volume_id,
+                            "EBS volume is not encrypted.",
+                            "Migrate data to an encrypted EBS volume using AWS KMS."
+                        )
+                    )
+
+    except Exception as error:
+
+        findings.append(
+            create_finding(
+                "ERROR",
+                "EBS",
+                "EBS Assessment",
+                str(error),
+                "Verify EC2 volume read permissions."
+            )
+        )
+
+    return findings
+
+
+# ============================================================
+# CHECK 7 - CLOUDTRAIL LOGGING
+# ============================================================
+
+def check_cloudtrail():
+    print("Checking CloudTrail...")
+
+    findings = []
+
+    try:
+        cloudtrail = boto3.client(
+            "cloudtrail"
+        )
+
+        response = cloudtrail.describe_trails(
+            includeShadowTrails=False
+        )
+
+        trails = response.get(
+            "trailList",
+            []
+        )
+
+        if not trails:
+
+            findings.append(
+                create_finding(
+                    "HIGH",
+                    "CloudTrail",
+                    "AWS Account",
+                    "No CloudTrail trail was detected.",
+                    "Configure CloudTrail to record AWS API activity."
+                )
+            )
+
+            return findings
+
+        active_trail_found = False
+
+        for trail in trails:
+
+            trail_name = trail[
+                "Name"
+            ]
+
+            try:
+
+                status = (
+                    cloudtrail.get_trail_status(
+                        Name=trail_name
+                    )
+                )
+
+                if status.get(
+                    "IsLogging",
+                    False
+                ):
+                    active_trail_found = True
+
+                else:
+
+                    findings.append(
+                        create_finding(
+                            "HIGH",
+                            "CloudTrail",
+                            trail_name,
+                            "CloudTrail exists but logging is disabled.",
+                            "Enable CloudTrail logging."
+                        )
+                    )
+
+            except Exception as error:
+
+                findings.append(
+                    create_finding(
+                        "ERROR",
+                        "CloudTrail",
+                        trail_name,
+                        str(error),
+                        "Verify CloudTrail read permissions."
+                    )
+                )
+
+        if active_trail_found:
+            pass
+
+    except Exception as error:
+
+        findings.append(
+            create_finding(
+                "ERROR",
+                "CloudTrail",
+                "CloudTrail Assessment",
+                str(error),
+                "Verify CloudTrail read permissions."
+            )
+        )
+
+    return findings
+
+
+# ============================================================
+# REPORTING
+# ============================================================
+
+def print_section(
+    title,
+    findings,
+    pass_message
 ):
-    print("\n" + "=" * 60)
-    print("AWS SECURITY POSTURE SCANNER")
-    print("=" * 60)
 
-    total_findings = 0
+    print("\n" + title)
+    print("-" * 70)
 
-    print("\nSECURITY GROUP CHECKS")
-    print("-" * 60)
+    if not findings:
 
-    if not security_group_findings:
-        print("[PASS] No SSH/RDP exposure to 0.0.0.0/0 detected.")
-    else:
-        for finding in security_group_findings:
-            total_findings += 1
+        print(
+            f"[PASS] {pass_message}"
+        )
 
-            print(
-                f"[{finding['severity']}] "
-                f"{finding['security_group']} "
-                f"({finding['name']}) allows "
-                f"{finding['service']} on port "
-                f"{finding['port']} from "
-                f"{finding['cidr']}"
-            )
+        return
 
-    print("\nRDS CHECKS")
-    print("-" * 60)
+    for finding in findings:
 
-    if not rds_findings:
-        print("[PASS] No publicly accessible RDS instances detected.")
-    else:
-        for finding in rds_findings:
-            total_findings += 1
+        print(
+            f"\n[{finding['severity']}] "
+            f"{finding['service']} | "
+            f"{finding['resource']}"
+        )
 
-            print(
-                f"[{finding['severity']}] "
-                f"RDS instance "
-                f"{finding['db_instance']} "
-                f"({finding['engine']}) "
-                f"is publicly accessible "
-                f"at {finding['endpoint']}"
-            )
+        print(
+            f"Issue: {finding['issue']}"
+        )
 
-    print("\nS3 CHECKS")
-    print("-" * 60)
+        print(
+            f"Remediation: "
+            f"{finding['remediation']}"
+        )
 
-    if not s3_findings:
-        print("[PASS] S3 Public Access Block is enabled for all buckets.")
-    else:
-        for finding in s3_findings:
-            total_findings += 1
 
-            print(
-                f"[{finding['severity']}] "
-                f"S3 bucket "
-                f"{finding['bucket']} - "
-                f"{finding['issue']}"
-            )
+def print_report(results):
 
-    print("\n" + "=" * 60)
-    print(f"TOTAL FINDINGS: {total_findings}")
-    print("=" * 60)
+    print(
+        "\n" + "=" * 70
+    )
 
+    print(
+        "AWS SECURITY POSTURE SCANNER"
+    )
+
+    print(
+        "=" * 70
+    )
+
+    print_section(
+        "SECURITY GROUP CHECKS",
+        results["security_groups"],
+        "No public SSH/RDP exposure detected."
+    )
+
+    print_section(
+        "RDS CHECKS",
+        results["rds"],
+        "No publicly accessible RDS instances detected."
+    )
+
+    print_section(
+        "S3 CHECKS",
+        results["s3"],
+        "Public Access Block posture passed for all evaluated buckets."
+    )
+
+    print_section(
+        "IAM MFA CHECKS",
+        results["iam_mfa"],
+        "All IAM users have MFA configured."
+    )
+
+    print_section(
+        "IAM ACCESS KEY CHECKS",
+        results["access_keys"],
+        f"No active access keys older than {STALE_ACCESS_KEY_DAYS} days detected."
+    )
+
+    print_section(
+        "EBS ENCRYPTION CHECKS",
+        results["ebs"],
+        "All EBS volumes are encrypted."
+    )
+
+    print_section(
+        "CLOUDTRAIL CHECKS",
+        results["cloudtrail"],
+        "Active CloudTrail logging detected."
+    )
+
+    all_findings = []
+
+    for result in results.values():
+        all_findings.extend(result)
+
+    security_findings = [
+        finding
+        for finding in all_findings
+        if finding["severity"] != "ERROR"
+    ]
+
+    errors = [
+        finding
+        for finding in all_findings
+        if finding["severity"] == "ERROR"
+    ]
+
+    print(
+        "\n" + "=" * 70
+    )
+
+    print(
+        "SCAN SUMMARY"
+    )
+
+    print(
+        "=" * 70
+    )
+
+    print(
+        f"Security findings: "
+        f"{len(security_findings)}"
+    )
+
+    print(
+        f"Assessment errors: "
+        f"{len(errors)}"
+    )
+
+    print(
+        "=" * 70
+    )
+
+
+# ============================================================
+# MAIN
+# ============================================================
 
 if __name__ == "__main__":
-    security_group_findings = check_security_groups()
-    rds_findings = check_public_rds()
-    s3_findings = check_s3_public_access()
 
-    print_report(
-        security_group_findings,
-        rds_findings,
-        s3_findings
+    print(
+        "\nStarting AWS Security Posture Scan...\n"
     )
+
+    results = {
+        "security_groups":
+            check_security_groups(),
+
+        "rds":
+            check_public_rds(),
+
+        "s3":
+            check_s3_public_access(),
+
+        "iam_mfa":
+            check_iam_mfa(),
+
+        "access_keys":
+            check_stale_access_keys(),
+
+        "ebs":
+            check_ebs_encryption(),
+
+        "cloudtrail":
+            check_cloudtrail()
+    }
+
+    print_report(results)
