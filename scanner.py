@@ -1,4 +1,5 @@
 import boto3
+import json
 from datetime import datetime, timezone
 
 
@@ -56,7 +57,6 @@ def check_security_groups():
                     if from_port is None or to_port is None:
                         continue
 
-                    # IPv4 checks
                     for ip_range in permission.get("IpRanges", []):
 
                         cidr = ip_range.get("CidrIp")
@@ -77,7 +77,6 @@ def check_security_groups():
                                     )
                                 )
 
-                    # IPv6 checks
                     for ipv6_range in permission.get("Ipv6Ranges", []):
 
                         cidr = ipv6_range.get("CidrIpv6")
@@ -178,34 +177,21 @@ def check_s3_public_access():
                     Bucket=bucket_name
                 )
 
-                config = response[
-                    "PublicAccessBlockConfiguration"
-                ]
+                config = response["PublicAccessBlockConfiguration"]
 
                 risky_settings = []
 
                 if not config.get("BlockPublicAcls", False):
-                    risky_settings.append(
-                        "BlockPublicAcls=False"
-                    )
+                    risky_settings.append("BlockPublicAcls=False")
 
                 if not config.get("IgnorePublicAcls", False):
-                    risky_settings.append(
-                        "IgnorePublicAcls=False"
-                    )
+                    risky_settings.append("IgnorePublicAcls=False")
 
                 if not config.get("BlockPublicPolicy", False):
-                    risky_settings.append(
-                        "BlockPublicPolicy=False"
-                    )
+                    risky_settings.append("BlockPublicPolicy=False")
 
-                if not config.get(
-                    "RestrictPublicBuckets",
-                    False
-                ):
-                    risky_settings.append(
-                        "RestrictPublicBuckets=False"
-                    )
+                if not config.get("RestrictPublicBuckets", False):
+                    risky_settings.append("RestrictPublicBuckets=False")
 
                 if risky_settings:
 
@@ -335,16 +321,11 @@ def check_stale_access_keys():
                     UserName=username
                 )
 
-                for key in keys.get(
-                    "AccessKeyMetadata",
-                    []
-                ):
+                for key in keys.get("AccessKeyMetadata", []):
 
                     create_date = key["CreateDate"]
 
-                    age = (
-                        now - create_date
-                    ).days
+                    age = (now - create_date).days
 
                     if (
                         key.get("Status") == "Active"
@@ -388,9 +369,7 @@ def check_ebs_encryption():
     try:
         ec2 = boto3.client("ec2")
 
-        paginator = ec2.get_paginator(
-            "describe_volumes"
-        )
+        paginator = ec2.get_paginator("describe_volumes")
 
         for page in paginator.paginate():
 
@@ -398,10 +377,7 @@ def check_ebs_encryption():
 
                 volume_id = volume["VolumeId"]
 
-                if not volume.get(
-                    "Encrypted",
-                    False
-                ):
+                if not volume.get("Encrypted", False):
 
                     findings.append(
                         create_finding(
@@ -438,18 +414,13 @@ def check_cloudtrail():
     findings = []
 
     try:
-        cloudtrail = boto3.client(
-            "cloudtrail"
-        )
+        cloudtrail = boto3.client("cloudtrail")
 
         response = cloudtrail.describe_trails(
             includeShadowTrails=False
         )
 
-        trails = response.get(
-            "trailList",
-            []
-        )
+        trails = response.get("trailList", [])
 
         if not trails:
 
@@ -465,29 +436,16 @@ def check_cloudtrail():
 
             return findings
 
-        active_trail_found = False
-
         for trail in trails:
 
-            trail_name = trail[
-                "Name"
-            ]
+            trail_name = trail["Name"]
 
             try:
-
-                status = (
-                    cloudtrail.get_trail_status(
-                        Name=trail_name
-                    )
+                status = cloudtrail.get_trail_status(
+                    Name=trail_name
                 )
 
-                if status.get(
-                    "IsLogging",
-                    False
-                ):
-                    active_trail_found = True
-
-                else:
+                if not status.get("IsLogging", False):
 
                     findings.append(
                         create_finding(
@@ -511,9 +469,6 @@ def check_cloudtrail():
                     )
                 )
 
-        if active_trail_found:
-            pass
-
     except Exception as error:
 
         findings.append(
@@ -533,21 +488,13 @@ def check_cloudtrail():
 # REPORTING
 # ============================================================
 
-def print_section(
-    title,
-    findings,
-    pass_message
-):
+def print_section(title, findings, pass_message):
 
     print("\n" + title)
     print("-" * 70)
 
     if not findings:
-
-        print(
-            f"[PASS] {pass_message}"
-        )
-
+        print(f"[PASS] {pass_message}")
         return
 
     for finding in findings:
@@ -558,29 +505,15 @@ def print_section(
             f"{finding['resource']}"
         )
 
-        print(
-            f"Issue: {finding['issue']}"
-        )
-
-        print(
-            f"Remediation: "
-            f"{finding['remediation']}"
-        )
+        print(f"Issue: {finding['issue']}")
+        print(f"Remediation: {finding['remediation']}")
 
 
 def print_report(results):
 
-    print(
-        "\n" + "=" * 70
-    )
-
-    print(
-        "AWS SECURITY POSTURE SCANNER"
-    )
-
-    print(
-        "=" * 70
-    )
+    print("\n" + "=" * 70)
+    print("AWS SECURITY POSTURE SCANNER")
+    print("=" * 70)
 
     print_section(
         "SECURITY GROUP CHECKS",
@@ -641,31 +574,64 @@ def print_report(results):
         if finding["severity"] == "ERROR"
     ]
 
-    print(
-        "\n" + "=" * 70
-    )
+    print("\n" + "=" * 70)
+    print("SCAN SUMMARY")
+    print("=" * 70)
 
-    print(
-        "SCAN SUMMARY"
-    )
+    print(f"Security findings: {len(security_findings)}")
+    print(f"Assessment errors: {len(errors)}")
 
-    print(
-        "=" * 70
-    )
+    print("=" * 70)
 
-    print(
-        f"Security findings: "
-        f"{len(security_findings)}"
-    )
 
-    print(
-        f"Assessment errors: "
-        f"{len(errors)}"
-    )
+# ============================================================
+# JSON REPORT
+# ============================================================
 
-    print(
-        "=" * 70
-    )
+def export_json_report(results):
+
+    sts = boto3.client("sts")
+    identity = sts.get_caller_identity()
+
+    all_findings = []
+
+    for result in results.values():
+        all_findings.extend(result)
+
+    security_findings = [
+        finding
+        for finding in all_findings
+        if finding["severity"] != "ERROR"
+    ]
+
+    errors = [
+        finding
+        for finding in all_findings
+        if finding["severity"] == "ERROR"
+    ]
+
+    report = {
+        "scanner": "Multi-Cloud Security Posture Scanner",
+        "cloud": "AWS",
+        "scan_timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "account_id": identity.get("Account"),
+        "principal_arn": identity.get("Arn"),
+        "summary": {
+            "security_findings": len(security_findings),
+            "assessment_errors": len(errors)
+        },
+        "results": results
+    }
+
+    with open("report.json", "w", encoding="utf-8") as file:
+        json.dump(
+            report,
+            file,
+            indent=4,
+            default=str
+        )
+
+    print("\nJSON report generated: report.json")
 
 
 # ============================================================
@@ -674,31 +640,18 @@ def print_report(results):
 
 if __name__ == "__main__":
 
-    print(
-        "\nStarting AWS Security Posture Scan...\n"
-    )
+    print("\nStarting AWS Security Posture Scan...\n")
 
     results = {
-        "security_groups":
-            check_security_groups(),
-
-        "rds":
-            check_public_rds(),
-
-        "s3":
-            check_s3_public_access(),
-
-        "iam_mfa":
-            check_iam_mfa(),
-
-        "access_keys":
-            check_stale_access_keys(),
-
-        "ebs":
-            check_ebs_encryption(),
-
-        "cloudtrail":
-            check_cloudtrail()
+        "security_groups": check_security_groups(),
+        "rds": check_public_rds(),
+        "s3": check_s3_public_access(),
+        "iam_mfa": check_iam_mfa(),
+        "access_keys": check_stale_access_keys(),
+        "ebs": check_ebs_encryption(),
+        "cloudtrail": check_cloudtrail()
     }
 
     print_report(results)
+
+    export_json_report(results)
